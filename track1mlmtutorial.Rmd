@@ -1,0 +1,572 @@
+---
+title: "MDC ABCD Workshop 2021 Multilevel Model Track 1 Tutorial"
+author: "Kate Mills"
+date: "7/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## MDC ABCD Workshop 2021 Multilevel Model Track 1 Tutorial
+
+```{r include=FALSE}
+# Turn off scientific notation
+options(scipen=999)
+
+# Setting the seed sets the starting number used to generate a sequence of random numbers, which ensures that you get the same result if you start with that same seed each time you run the same process
+set.seed(seed = 711711)
+
+# Load libraries
+list.of.packages <- c("Hmisc","Rmisc","tidyr", "nlme",
+              "MASS","ggplot2","dplyr","lme4",
+              "MuMIn","mgcv","broom", "gratia", 
+              "splines","psych","table1", "rio",
+              "skimr","magrittr","qwraps2", "sjPlot")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, library, character.only = TRUE)
+```
+
+```{r set themes, include=FALSE}
+
+# Visualizing data nurtures coding development, so don't be afraid to spend
+# time making your own themes for your plots
+
+theme_kate <- function () { 
+  theme_bw() +
+  theme_minimal(base_size = 12, base_family = "Arial") +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        axis.text = element_text(size=14),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank())
+}
+```
+
+### Load some ABCD data
+```{r load abcd data, include=FALSE}
+# No need to do anything here because this is something specific to Kate
+secretpath<-readLines("~/Downloads/pathtoabcd.txt")
+
+# Edit "secret path" to go to the secure, encrypted, password-protected location
+# where you have downloaded the ABCD 3.0 Curated Dataset
+# We are going to load in the demographics dataset
+
+abcddemo<-rio::import(paste0(secretpath,"/abcd_lpds01.txt"))
+abcdbrief<-rio::import(paste0(secretpath,"/abcd_yssbpm01.txt"))
+
+```
+
+### Visualize longitudinal study design
+```{r}
+# Reclass variables in Demographics datatable, and filter to only relevant variables for this section
+abcddemo_tbl <- abcddemo %>% 
+  filter(!sex=="Sex of the subject") %>%
+  select(interview_age,
+         src_subject_id,
+         eventname,
+         sex,
+         demo_gender_id_v2_l) %>%
+  mutate(interview_age=as.integer(interview_age),
+         src_subject_id=as.factor(src_subject_id),
+         eventname=as.factor(eventname),
+         sex=as.factor(sex),
+         gender=as.factor(demo_gender_id_v2_l)) 
+
+# Filter to a subsample for easier visualization
+random_rows <- sample(2000)
+abcddemo_tbl <- abcddemo_tbl[random_rows, ]
+
+study_design <- abcddemo_tbl[order(abcddemo_tbl$interview_age,
+                               abcddemo_tbl$src_subject_id,
+                               abcddemo_tbl$eventname),] %>%
+  mutate(Rank_nr=as.numeric(factor(src_subject_id,levels=unique(src_subject_id))))
+
+study_design_plot<- ggplot(study_design,
+                           aes(x=(interview_age/12),
+                               y=Rank_nr,
+                               group=src_subject_id,
+                               shape=sex,
+                               col=gender)) + 
+  geom_point(alpha=1) + 
+  geom_line(alpha=.4) +
+  ylab("") +
+  xlab("Age (years)") +
+  scale_y_discrete(breaks=NULL) +
+  theme_kate()+
+  theme(axis.text.y = element_blank())
+  
+
+# Take a look
+print(study_design_plot)
+
+ggsave(filename="abcd_study_design.png",
+       plot=study_design_plot, width=6, height=5, units='in', dpi=300)
+
+
+#Print biological sex histogram
+sex_histogram <- ggplot(abcddemo_tbl,aes(x=interview_age,fill=sex))+
+  scale_fill_manual(aes(fill=sex),
+                     labels = c("female", "male"),
+                     values = c("#FDE74C", "#56A3A6")) +
+  geom_histogram(alpha=1, position="stack",binwidth=1) +
+  xlim(min(abcddemo_tbl$interview_age),max(abcddemo_tbl$interview_age)) +
+  ggtitle("") +
+  guides(fill=guide_legend(title="Sex"))+
+  ylab("N") +
+  xlab("Interview age in months")+
+  theme_kate()
+sex_histogram
+
+ggsave(filename="abcd_sex_histogram.png",
+       plot=sex_histogram, width=6, height=5, units='in', dpi=300)
+```
+
+### Let's visualize some of the ABCD dataset
+```{r include=FALSE}
+# Take a look at the variables—rio didn't do a good job classifying them correctly.
+str(abcdbrief)
+
+# Reclassify relevant variables
+abcdbrief <- abcdbrief %>% 
+  filter(!sex=="Sex of the subject") %>%
+  mutate(interview_age=as.integer(interview_age),
+         src_subject_id=as.factor(src_subject_id),
+         eventname=as.factor(eventname),
+         sex=as.factor(sex),
+         bpm_internal=as.numeric(bpm_y_ss_internal_mean),
+         bpm_exteral=as.numeric(bpm_y_ss_external_mean)
+         ) 
+
+# Filter to a subsample for easier visualization
+random_rows <- sample(2000)
+abcdbrief_short <- abcdbrief[random_rows, ]
+
+# Let's just take a look at this variable over time
+abcdbrief_plot<-ggplot(data=abcdbrief_short,
+                       aes(x=interview_age/12,
+                           y=bpm_internal))+
+  xlim(min(abcdbrief$interview_age/12),max(abcdbrief$interview_age/12))+
+  ylim(min(abcdbrief$bpm_internal),max(abcdbrief$bpm_internal))+
+  xlab("Age (years)")+
+  ylab("Brief Internalizing (mean)")+
+  ggtitle("Brief Internalizing by Age")+
+  geom_line(aes(colour=sex,
+                group=src_subject_id),
+            size=.6,
+            alpha=0.4)+
+  geom_point(aes(colour=sex,
+                 group=src_subject_id),
+             size=1.5,
+             alpha=0.5)+
+  scale_color_manual(name= "sex",
+                     labels = c("female", "male"),
+                     values = c("#FDE74C", "#56A3A6"))+
+  theme_kate()+
+  theme(legend.position="none")
+
+# Take a look
+print(abcdbrief_plot)
+
+```
+
+### Let's dive into some modeling
+```{r include=FALSE}
+# Load the dataset in the tutorial
+load("braindata.Rdata")
+
+# Check out variable classifications
+str(braindata)
+
+# Fix a variable classification
+braindata<-braindata %>%
+  mutate(subid=as.factor(subid))
+
+# Create age-centered variable to reduce correlations between age and polynomial terms
+braindata<-braindata %>%
+  mutate(agecent=age-(mean(age)))
+
+# Create polynomial terms to examine non-linear group models
+braindata<-braindata %>%
+  mutate(agecentsq=agecent*agecent,
+         agecentcu=agecent*agecent*agecent)
+
+# Create unconditional model using nlme package (lme function)
+uncond_PFCmodel=lme(prefrontal_vol_long ~ 1,
+                   method="ML",
+                   random = ~1|subid,
+                   data=braindata)
+
+# Create unconditional model using lme4 package (lmer function)
+uncond_PFCmodel_lmer=lmer(prefrontal_vol_long ~ 1 + 
+                            (1 | subid),
+                          REML = FALSE,
+                          data=braindata)
+
+
+## Linear age model (nlme)
+lin_PFCmodel=lme(prefrontal_vol_long ~ agecent,
+                 method="ML",
+                 random = ~1|subid,
+                 data=braindata)
+
+## Linear age model (lme4)
+lin_PFCmodel_lmer=lmer(prefrontal_vol_long ~ agecent + 
+                         (1 | subid),
+                       REML = FALSE,
+                       data=braindata)
+
+# Take a look at the fixed effects coefficient
+fixef(lin_PFCmodel)
+fixef(lin_PFCmodel_lmer)
+
+# Now take a look at the random effects coefficients 
+coef(lin_PFCmodel)
+coef(lin_PFCmodel_lmer)
+
+#Slightly different
+print(coef(lin_PFCmodel)-coef(lin_PFCmodel_lmer))
+
+# Summary of models
+summary(lin_PFCmodel)
+summary(lin_PFCmodel_lmer)
+
+
+## Let's add a random slope to the model to make it an unconditional growth model
+lin_PFCmodel_rs=lme(prefrontal_vol_long ~ agecent,
+                  method="ML",
+                  random = ~1+agecent|subid,
+                  data=braindata)
+
+lin_PFCmodel_rs_lmer=lmer(prefrontal_vol_long ~ agecent + 
+                           (agecent | subid),
+                         REML = FALSE,
+                         data=braindata)
+
+# Summary of models
+summary(lin_PFCmodel_rs)
+summary(lin_PFCmodel_rs_lmer)
+
+# Compare models with and without random slopes included
+anova(lin_PFCmodel,lin_PFCmodel_rs)
+anova(lin_PFCmodel_lmer,lin_PFCmodel_rs_lmer)
+
+```
+
+### Modeling continued — checking out non-linear group-level trajectories
+```{r include=FALSE}
+## Quadratic age model (nlme)
+quad_PFCmodel=lme(prefrontal_vol_long ~ agecent+agecentsq,
+                   method="ML",
+                   random = ~1|subid,
+                   data=braindata)
+
+## Quadratic age model (lme4)
+quad_PFCmodel_lmer=lmer(prefrontal_vol_long ~ agecent+agecentsq+ 
+                         (1 | subid),
+                       REML = FALSE,
+                       data=braindata)
+
+## Cubic age model
+cub_PFCmodel=lme(prefrontal_vol_long ~ agecent+agecentsq+agecentcu,
+                  method="ML",
+                  random = ~1|subid,
+                  data=braindata)
+
+## Cubic age model (lme4()
+cub_PFCmodel_lmer=lmer(prefrontal_vol_long ~ agecent+agecentsq+agecentcu+ 
+                         (1 | subid),
+                       REML = FALSE,
+                       data=braindata)
+
+
+## Using a model fit approach
+# Compare model fit using anova
+age_predict_PFC_table<-anova(uncond_PFCmodel,
+                          lin_PFCmodel,
+                          quad_PFCmodel,
+                          cub_PFCmodel)
+# take a look
+age_predict_PFC_table
+
+
+# The lme4 output should look the same
+anova(uncond_PFCmodel_lmer,
+      lin_PFCmodel_lmer,
+      quad_PFCmodel_lmer,
+      cub_PFCmodel_lmer)
+
+
+#compare cubic model and linear model
+age_predict_PFC_linvscub_table<-anova(lin_PFCmodel,cub_PFCmodel)
+age_predict_PFC_linvscub_table
+
+# Looks like the cubic model is the best fit
+bestagemodel_PFC<-cub_PFCmodel
+
+
+# Graph PFC group-level polynomial model
+
+# Need to create a dataframe of predicted values for ages contained within the sample
+agecent<-round(seq(min(braindata$agecent,na.rm = TRUE),
+                   max(braindata$agecent,na.rm = TRUE),by=1),
+               2)
+agecentsq=agecent*agecent
+agecentcu=agecent*agecent*agecent
+data.pred = data.frame(agecent=agecent,
+                       agecentsq=agecentsq,
+                       agecentcu=agecentcu)
+data.pred$age<-(data.pred$agecent+mean(braindata$age))
+y.pred = predict(bestagemodel_PFC,
+                 data.pred,
+                 level=0)
+data.pred = cbind.data.frame(data.pred,
+                             y.pred)
+scale = 1.96
+designmat<-model.matrix(eval(eval(bestagemodel_PFC$call$fixed)[-2]),
+                        data.pred[-3]) #make design matrix
+SDvalue<-sqrt(diag(designmat %*% bestagemodel_PFC$varFix %*% t(designmat))) #calculate standard deviation for each point for each model
+y.lower<-y.pred-(scale*SDvalue) #calculate confidence intervals - lower
+y.upper<-y.pred+(scale*SDvalue) #calculate confidence intervals - upper
+data.pred = cbind.data.frame(data.pred,
+                             y.lower,
+                             y.upper)
+data.pred$prefrontal_vol_long<-data.pred$y.pred
+
+
+# Graph it
+PFC_Age<-ggplot(data=braindata,
+                aes(x=age,
+                    y=prefrontal_vol_long))+
+  xlim(9,23)+
+  ylim(125000,225000)+
+  xlab("Age (years)")+
+  ylab("PFC volume (longitudinal)")+
+  geom_line(data=data.pred,
+            aes(x=age, y=prefrontal_vol_long), size=.7, colour="deeppink")+
+  geom_ribbon(data=data.pred,
+              aes(ymin=y.lower, ymax=y.upper), alpha=0.2, fill="deeppink")+
+  geom_line(aes(colour=subid, group=subid),size=.3,alpha=0.3)+
+  geom_point(aes(colour=subid, group=subid),size=2,alpha=0.3)+
+  theme_kate() +
+  theme(legend.position="none")
+
+print(PFC_Age)
+```
+
+### Let's try a GAMM approach
+```{r include=FALSE}
+# Model a penalized cubic regression spline of with 4 knots
+gamm4_pfc<-gamm(prefrontal_vol_long ~ s(age,bs = "cs",k=4),
+                            random=list(subid=~1),
+                            data=(braindata))
+
+summary(gamm4_pfc$gam)
+
+# Create a predicted age data frame for graphing
+age<-round(seq(min(braindata$age,na.rm = TRUE),
+                  max(braindata$age,na.rm = TRUE),by=1),2)
+
+data.pred = data.frame(age=age)
+y.pred = predict(gamm4_pfc$gam,
+                 newdata=data.pred,se=T)
+data.pred = cbind.data.frame(data.pred,
+                             y.pred)
+scale = 1.96
+y.upper = y.pred$fit + (scale*y.pred$se.fit)
+y.lower = y.pred$fit - (scale*y.pred$se.fit)
+prefrontal_vol_long<-data.pred$fit
+assign("gamm4_pfc_pred",cbind.data.frame(data.pred,
+                                         y.lower,
+                                         y.upper,
+                                         prefrontal_vol_long))
+rm(avgage,data.pred,y.pred,y.upper,y.lower)
+
+# Graph it
+gamm4_pfc_plot<-ggplot(data=NULL,
+                       aes(x=age,
+                           y=prefrontal_vol_long))+
+  ylab("Prefrontal Volume")+
+  xlab("Age (years)")+
+  geom_line(data=braindata,
+            aes(group=subid,
+                colour=subid),
+            alpha=0.4,
+            size=.6) +
+  geom_point(data=braindata,
+             aes(colour=sex),
+             size=1.5,
+             alpha=0.5) +
+  geom_line(data=gamm4_pfc_pred,
+            aes(x=age,
+                y=prefrontal_vol_long),
+            size=1,
+            colour="purple2")+
+  geom_ribbon(data=gamm4_pfc_pred,
+              aes(ymin=y.lower,
+                  ymax=y.upper),
+              alpha=0.4,
+              fill="purple2")+
+  theme_kate()+
+  theme(legend.position="none")
+
+print(gamm4_pfc_plot)             
+```
+
+### Looking at models for different groups
+```{r include=FALSE}
+
+# Create a gamm with sex interacting on age
+gamm_fullsexint_pfc<-
+  gamm(prefrontal_vol_long ~ sex +
+         s(age,bs = "cs",k=4) + 
+         s(age,by=sex,k=4),
+       random=list(subid=~1),
+       data=(braindata))
+
+# Just main effects of sex
+gamm_mainsexint_pfc<-
+  gamm(prefrontal_vol_long ~ sex + 
+         s(age,bs = "cs",k=4),
+       random=list(subid=~1),
+       data=(braindata))
+
+# Age only model
+gamm_ageonly_pfc<-
+  gamm(prefrontal_vol_long ~ s(age,bs = "cs",k=4),
+       random=list(subid=~1),
+       data=(braindata))
+
+# Compare the models
+modcompare<-anova(gamm_ageonly_pfc$lme,
+             gamm_mainsexint_pfc$lme,
+             gamm_fullsexint_pfc$lme)
+
+print(modcompare)
+
+summary(gamm_fullsexint_pfc$gam)
+
+# And with the lme/lmer polynomial approach
+## Cubic age model with sex as an interaction (nlme)
+sexint_PFCmodel=lme(prefrontal_vol_long ~ agecent*sex+agecentsq*sex+agecentcu*sex,
+                 method="ML",
+                 random = ~1|subid,
+                 data=braindata)
+
+## Cubic age model with sex as an interaction (lme4)
+sexint_PFCmodel_lmer=lmer(prefrontal_vol_long ~ agecent*sex+agecentsq*sex+agecentcu*sex + 
+                         (1 | subid),
+                       REML = FALSE,
+                       data=braindata)
+
+summary(sexint_PFCmodel)
+summary(sexint_PFCmodel_lmer)
+
+## Cubic age model with sex as a main effect (nlme)
+sexmain_PFCmodel=lme(prefrontal_vol_long ~ agecent+agecentsq+agecentcu+sex,
+                 method="ML",
+                 random = ~1|subid,
+                 data=braindata)
+
+## Cubic age model with sex as a main effect (lme4)
+sexmain_PFCmodel_lmer=lmer(prefrontal_vol_long ~ agecent+agecentsq+agecentcu+sex + 
+                         (1 | subid),
+                       REML = FALSE,
+                       data=braindata)
+
+
+# Compare the models as well as to the age-only model
+anova(cub_PFCmodel,sexmain_PFCmodel,sexint_PFCmodel)
+```
+
+
+### Graph models for different groups
+```{r include=FALSE}
+
+females<-braindata %>% filter(sex=="F")
+assign(paste0("gammmod_female_pfc"),
+       gamm(prefrontal_vol_long ~ s(age,bs = "cs",k=4),
+            random=list(subid=~1),
+            data=(females)))
+summary(get(paste0("gammmod_female_pfc"))$gam)
+
+age<-round(seq(min(females$age,na.rm = TRUE),
+                  max(females$age,na.rm = TRUE),by=1),2)
+data.pred = data.frame(age=age)
+y.pred = predict(get(paste0("gammmod_female_pfc"))$gam,
+                 newdata=data.pred,se=T)
+data.pred = cbind.data.frame(data.pred,
+                             y.pred)
+scale = 1.96
+y.upper = y.pred$fit + (scale*y.pred$se.fit)
+y.lower = y.pred$fit - (scale*y.pred$se.fit)
+prefrontal_vol_long<-data.pred$fit
+assign(paste0("pred_females_pfc"),cbind.data.frame(data.pred,
+                                                     y.lower,
+                                                     y.upper,
+                                                     prefrontal_vol_long))
+rm(avgage,data.pred,y.pred,y.upper,y.lower)
+
+males<-braindata %>% filter(sex=="M")
+assign(paste0("gammmod_male_pfc"),
+       gamm(prefrontal_vol_long ~ s(age,bs = "cs",k=4),
+            random=list(subid=~1),
+            data=(males)))
+summary(get(paste0("gammmod_male_pfc"))$gam)
+
+avgage<-round(seq(min(males$age,na.rm = TRUE),
+                  max(males$age,na.rm = TRUE),by=1),2)
+data.pred = data.frame(age=age)
+y.pred = predict(get(paste0("gammmod_male_pfc"))$gam,
+                 newdata=data.pred,se=T)
+data.pred = cbind.data.frame(data.pred,
+                             y.pred)
+scale = 1.96
+y.upper = y.pred$fit + (scale*y.pred$se.fit)
+y.lower = y.pred$fit - (scale*y.pred$se.fit)
+prefrontal_vol_long<-data.pred$fit
+assign(paste0("pred_males_pfc"),cbind.data.frame(data.pred,
+                                                   y.lower,
+                                                   y.upper,prefrontal_vol_long))
+
+
+# Graph it
+pfcbysex<-ggplot(data=NULL,
+              aes(x=age,
+                  y=prefrontal_vol_long))+
+         ylab("Prefrontal Cortex Volume")+
+         xlab("Age (years)")+
+         scale_color_manual(name= "Sex",
+                            labels = c("female", "male"),
+                            values = c("#FDE74C", "#56A3A6")) +
+         geom_point(data=braindata,
+                    aes(colour=sex),
+                    size=1.5,
+                    alpha=0.6) +
+         geom_line(data=get(paste0("pred_males_pfc")),
+                   aes(x=age, y=prefrontal_vol_long),
+                   size=1,
+                   colour="#56A3A6")+
+         geom_ribbon(data=get(paste0("pred_males_pfc")),
+                     aes(ymin=y.lower,
+                         ymax=y.upper),
+                     alpha=0.4,
+                     fill="#56A3A6")+
+         geom_line(data=get(paste0("pred_females_pfc")),
+                   aes(x=age, y=prefrontal_vol_long),
+                   size=1,
+                   colour="#FDE74C")+
+         geom_ribbon(data=get(paste0("pred_females_pfc")),
+                     aes(ymin=y.lower,
+                         ymax=y.upper),
+                     alpha=0.4,
+                     fill="#FDE74C")+
+         theme_kate()
+
+ggsave(filename="pfcbysexgamm.png",
+       plot=pfcbysex,
+       width=6, height=4, units='in', dpi=300)
+```
